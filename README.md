@@ -1,8 +1,8 @@
-## AB testing
+# AB testing
 
-# This project helped a online course company verify if the test version of product increased click through rate and total revenue by conducting A/B test. 
+## This project helped a online course company verify if the test version of product increased click through rate and total revenue by conducting A/B test. 
 
-# Steps:
+## Steps:
 1. Transformed mobile app data from Google Analytics
 2. Made preparation on 23K records including data clean and examined control&test groups were comparable by applying A/A test
 3. Designed and conducted A/B Testing, difference-in-difference t-test and confirmed that the test version successfully increased click through rate and total revenue
