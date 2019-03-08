@@ -1,238 +1,185 @@
-library(sqldf)
-
 # load data
-data <- read.csv("abtest_example_ctr.csv")
+data = read.csv("abtest_example_ctr.csv")
 
-#summarize data
+# transform the groups into 0/1; create a new column: ctr(click through rate)
+library(dplyr)
+## 
+## Attaching package: 'dplyr'
+## The following objects are masked from 'package:stats':
+## 
+##     filter, lag
+## The following objects are masked from 'package:base':
+## 
+##     intersect, setdiff, setequal, union
+data <- data %>%
+  mutate(groups = ifelse(groups == "treatment",1,0))
+
+
+ctr = data$clicks/data$views
+data = data.frame(data,ctr)
+
+# summary data
 summary(data)
-
-#Note there are NA's for userid
-sum(is.na(data$userid))/nrow(data) #~2%
-
-#check for mixed assignment
-sqldf("select count(1) from (select userid, count(distinct(groups)) 
-      from data group by userid having count(distinct(groups)) >1) as a")
-#there are mixed assigned users
-
-#check if multiple device per user, multiple user per device
-sqldf("select count(1) from (select userid, count(distinct(deviceid))
-      from data group by userid having count(distinct(deviceid))>1) as a")
-
-sqldf("select count(1) from (select deviceid, count(distinct(userid))
-      from data group by deviceid having count(distinct(userid))>1) as a")
-# there are some multiple device per user, and multiple user per device
-
-### check NA/mixed/multiple device is random
-# create dummy, if any problems 1, else 0. 
+##      userid      country       groups          deviceid         device    
+##  Min.   : 1000   CA:4571   Min.   :0.0000   Min.   : 5000   Android:7003  
+##  1st Qu.: 3256   CN:4576   1st Qu.:0.0000   1st Qu.: 8758   Ios    :4583  
+##  Median : 5450   GB:4631   Median :1.0000   Median :12538   Other  :4717  
+##  Mean   : 5485   US:9182   Mean   :0.5009   Mean   :12566   Web    :6657  
+##  3rd Qu.: 7717             3rd Qu.:1.0000   3rd Qu.:16409                 
+##  Max.   :10000             Max.   :1.0000   Max.   :20000                 
+##  NA's   :275                                                              
+##     sellerid         itemid             date           views       
+##  Min.   :100.0   Min.   :1000   2017-05-16: 1721   Min.   : 0.000  
+##  1st Qu.:203.0   1st Qu.:1508   2017-05-15: 1701   1st Qu.: 4.000  
+##  Median :304.0   Median :1994   2017-05-13: 1674   Median : 6.000  
+##  Mean   :302.2   Mean   :1998   2017-05-09: 1657   Mean   : 5.796  
+##  3rd Qu.:402.0   3rd Qu.:2497   2017-05-11: 1650   3rd Qu.: 7.000  
+##  Max.   :500.0   Max.   :3000   2017-05-17: 1650   Max.   :20.000  
+##                                 (Other)   :12907                   
+##      clicks         revenue             ctr        
+##  Min.   :0.000   Min.   :   0.00   Min.   :0.0000  
+##  1st Qu.:0.000   1st Qu.:   0.00   1st Qu.:0.0000  
+##  Median :1.000   Median :   0.00   Median :0.2000  
+##  Mean   :1.175   Mean   :  11.97   Mean   :0.2018  
+##  3rd Qu.:2.000   3rd Qu.:   0.00   3rd Qu.:0.3333  
+##  Max.   :8.000   Max.   :1024.12   Max.   :1.0000  
+##                                    NA's   :69
+# check NA in userid
+sum(is.na(data$userid))/nrow(data)
+## [1] 0.01197735
 Pb_miss=1*is.na(data$userid)
 
-userid_mix=as.numeric(sqldf("select userid from (select userid, count(distinct(groups)) 
-                  from data group by userid having count(distinct(groups)) >1) as a")[[1]])
-fun_Pb_mix=function(x){x %in%userid_mix}
-Pb_mix=1*sapply(data$userid,FUN=fun_Pb_mix)
+# select records with normal userid
+data$pb_okay = apply(matrix(cbind(Pb_miss), nrow = nrow(data)), 1, max)
+data=data[data$pb_okay == 0,]
 
-userid_mulD=as.numeric(sqldf("select userid from (select userid, count(distinct(deviceid)) 
-                  from data group by userid having count(distinct(deviceid))>1) as a")[[1]])
-fun_Pb_mulD=function(x){x %in%userid_mulD}
-Pb_mulD=1*sapply(data$userid,FUN=fun_Pb_mulD)
-
-deviceid_mulU=as.numeric(sqldf("select deviceid from (select deviceid, count(distinct(userid)) 
-                  from data group by deviceid having count(distinct(userid)) >1) as a")[[1]])
-fun_Pb_mulU=function(x){x %in%deviceid_mulU}
-Pb_mulU=1*sapply(data$deviceid,FUN=fun_Pb_mulU)
-
-# For simplicity, I create a combined column 1/0 if any problems. In real projects, 
-# you may want to do this separately for each problem cuz they may have different causes
-data$pb_all = dd = apply(matrix(cbind(Pb_miss, Pb_mix, Pb_mulD, Pb_mulU), nrow = nrow(data)), 1, max)
-
-# run model of dummy with other covariates, see if any covariates have strong correlation with having problematic assignment
-# let's start with a simple model as there are not many covariates
-pb_mod = glm(pb_all ~ country + groups + device + date + views + clicks + revenue, data, family = 'binomial')
-summary(pb_mod)
-# some country, device have significant result, need to deep dive, if any bug exists, consider checking???
-# by type of problem (other device type have more deviced IDs? more likely to be missing?)
-aggregate(Pb_miss, by = list(data$device), FUN = mean)
-aggregate(Pb_mix, by = list(data$device), FUN = mean)
-aggregate(Pb_mulD, by = list(data$device), FUN = mean)
-aggregate(Pb_mulU, by = list(data$device), FUN = mean)
-# Other device has one ID mapping multiple users. Is this expected? Talk to Engineers, is this Logging problem?
-
-
-# blox of key metrics, views, clicks, ctr, problem
-boxplot(data$views~Pb_miss)
-boxplot(data$clicks~Pb_miss)
-
-boxplot(data$views~Pb_mix)
-boxplot(data$clicks~Pb_mix)
-
-boxplot(data$views~Pb_mulD)
-boxplot(data$clicks~Pb_mulD)
-
-boxplot(data$views~Pb_mulU)
-boxplot(data$clicks~Pb_mulU)
-
-# For simplicity, throw away the problematic assignments. In reality, do not do this by default. Need to go through
-# checks carefully. 
-data=data[data$pb_all == 0,]
-
-# sanity check, check before experiment, metrics are comparable, no sig diff between test/control
-# day1-day3 data was before experiment start
+# seperate the data into two groups: 
+# day1-day3 data:before experiment start
+# day4-day14 data: the experimengt is running
 data$date=as.Date(data$date)
 data_before<-data[data$date<(min(data$date)+3),]
 data_start<-data[data$date>=(min(data$date)+3),]
 
-# compare aggregated CTR between test/control before experiment start
-x1=sum(data_before$clicks[data_before$groups=='treatment'])
-x2=sum(data_before$clicks[data_before$groups=='control'])
-n1=sum(data_before$views[data_before$groups=='treatment'])
-n2=sum(data_before$views[data_before$groups=='control'])
-prop.test(x=c(x1,x2),n=c(n1,n2),alternative = 'two.sided')
-# also compare clicks, views
 
-# compare other covariates comparable, take device as example
-# You can try statistical tests, think about what test? 
-# For this case, let's start with simple visualization, if seems imbalanced, run tests to confirm
-par(mfrow = c(2,1))
-barplot(prop.table(table(data_before[data_before$groups == 'treatment','device'])), main = 'treatment')
-barplot(prop.table(table(data_before[data_before$groups == 'control','device'])), main = 'control')
+# AA Testing: compare CTR, clicks, views and revenue between test/control before experiment start
+a1=data_before$clicks[data_before$groups==1]
+a2=data_before$clicks[data_before$groups==0]
+b1=data_before$views[data_before$groups==1]
+b2=data_before$views[data_before$groups==0]
+c1=data_before$ctr[data_before$groups==1]
+c2=data_before$ctr[data_before$groups==0]
+d1=data_before$revenue[data_before$groups==1]
+d2=data_before$revenue[data_before$groups==0]
+t.test(x=a1,y=a2,alternative = 'two.sided')
+## 
+##  Welch Two Sample t-test
+## 
+## data:  a1 and a2
+## t = 0.52552, df = 4798.3, p-value = 0.5992
+## alternative hypothesis: true difference in means is not equal to 0
+## 95 percent confidence interval:
+##  -0.04257317  0.07375644
+## sample estimates:
+## mean of x mean of y 
+##  1.055441  1.039849
+t.test(x=b1,y=b2,alternative = 'two.sided')
+## 
+##  Welch Two Sample t-test
+## 
+## data:  b1 and b2
+## t = 0.40943, df = 4798.5, p-value = 0.6822
+## alternative hypothesis: true difference in means is not equal to 0
+## 95 percent confidence interval:
+##  -0.1040833  0.1590335
+## sample estimates:
+## mean of x mean of y 
+##  5.318163  5.290688
+t.test(x=c1,y=c2,alternative = 'two.sided')
+## 
+##  Welch Two Sample t-test
+## 
+## data:  c1 and c2
+## t = 0.12361, df = 4777.9, p-value = 0.9016
+## alternative hypothesis: true difference in means is not equal to 0
+## 95 percent confidence interval:
+##  -0.01012417  0.01148683
+## sample estimates:
+## mean of x mean of y 
+## 0.1946201 0.1939388
+t.test(x=d1,y=d2,alternative = 'two.sided')
+## 
+##  Welch Two Sample t-test
+## 
+## data:  d1 and d2
+## t = 1.4133, df = 4433.1, p-value = 0.1576
+## alternative hypothesis: true difference in means is not equal to 0
+## 95 percent confidence interval:
+##  -0.6086642  3.7526440
+## sample estimates:
+## mean of x mean of y 
+## 11.333644  9.761654
+# the control and test groups are comparable
 
-#### Hypothesis Testing #####
+
+#### Hypothesis Testing - CTR #####
 # run test, not significant
-x1=sum(data_start$clicks[data_start$groups=='treatment'])
-x2=sum(data_start$clicks[data_start$groups=='control'])
-n1=sum(data_start$views[data_start$groups=='treatment'])
-n2=sum(data_start$views[data_start$groups=='control'])
-prop.test(x=c(x1,x2),n=c(n1,n2),alternative = 'two.sided')
+x1=data_start$ctr[data_start$groups==1]
+x2=data_start$ctr[data_start$groups==0]
+t.test(x=x1,y=x2,alternative = 'two.sided')
+## 
+##  Welch Two Sample t-test
+## 
+## data:  x1 and x2
+## t = 1.2029, df = 17834, p-value = 0.229
+## alternative hypothesis: true difference in means is not equal to 0
+## 95 percent confidence interval:
+##  -0.002103147  0.008785661
+## sample estimates:
+## mean of x mean of y 
+## 0.2053755 0.2020342
+# the difference between test/control group is not significant
 
 
-# by subgroup, write a function, apply, which signficant
-ztest_by_subgroup<-function(data_start, bycol, val)
-{
-  data_use=data_start[data_start[bycol]==val,]
-  x1=sum(data_use$clicks[data_use$groups=='treatment'])
-  x2=sum(data_use$clicks[data_use$groups=='control'])
-  n1=sum(data_use$views[data_use$groups=='treatment'])
-  n2=sum(data_use$views[data_use$groups=='control'])
-  return(prop.test(x=c(x1,x2),n=c(n1,n2),alternative = 'two.sided'))
-}
-
-test_bydevice = data.frame(matrix(nrow = 0, ncol = 6,
-                          dimnames = list(NULL, 
-                                          c('device','p.value','ctr_treatment',
-                                            'ctr_control', 'ci.low','ci.high'))))
-for (i in 1:length(unique(data$device))){
-  device = as.character(unique(data$device)[i])
-  test = ztest_by_subgroup(data_start, 'device', device)
-  # you can check available statistics using names(test)
-  testresult = data.frame('device' = device, 
-                          'p.value' = test$p.value, 
-                          'ctr_treatment' = test$estimate[1], 
-                          'ctr_control' = test$estimate[2],
-                          'ci.low' = test$conf.int[1],
-                          'ci.high' = test$conf.int[2])
-  test_bydevice = rbind(test_bydevice,testresult)
-}
-test_bydevice
-# Ios significant, figure out why only works for Ios. Discuss with Eng & PM
-
-############### Revenue #####################
+#### Hypothesis Testing - Revenue #####
 hist(data$revenue)
-boxplot(Revenue)
+ 
+boxplot(data$revenue)
+ 
 # highly skewed
 sum(data$revenue == 0)/nrow(data) 
-
+## [1] 0.8901477
 #only consider revenue with revenue>0
-Revenue<-data$revenue[data$revenue>0]
-hist(Revenue)
-boxplot(Revenue)
+revenue_win<-data$revenue[data$revenue>0]
+hist(revenue_win)
+ 
+boxplot(revenue_win)
+ 
+#deal with outliers
+bound=quantile(revenue_win,0.99)
+bound
+##      99% 
+## 260.9183
+revenue_win[revenue_win>bound]=bound
+hist(revenue_win)
 
-# winsorization, capping
-bound=quantile(Revenue,0.99)
-Revenue_win<-Revenue
-Revenue_win[Revenue>bound]=bound
-hist(Revenue_win)
-# or do it with built-in function
-# library(robustHD)
-# Winsorize(data$revenue, minval = NULL, maxval = NULL, probs = c(0.05, 0.95),  na.rm = FALSE)
-
-# compare normal(CLT) & bootstrap distribution for estimator
-#CLT
-E_mean=mean(Revenue_win)
-E_var=var(Revenue_win)/length(Revenue_win)
-
-#bootstrap
-True=mean(Revenue_win)
-btsample = rep(0, 1000)
-for (i in 1:1000){
-  sample = Revenue_win[sample(length(Revenue_win), length(Revenue_win), replace =TRUE)]
-  btsample[i] = mean(sample)
-}
-var_bt = var(btsample)
-
-E_var 
-var_bt
-
-# what if the statistics of interest is 75% percentile of revenue if has spending?
-mean = quantile(Revenue_win, 0.75)
-btsample = rep(0, 1000)
-for (i in 1:1000){
-  sample = Revenue_win[sample(length(Revenue_win), length(Revenue_win), replace =TRUE)]
-  btsample[i] = quantile(sample, 0.75)
-}
-var_bt = var(btsample)
-var_bt
-
-####### result analysis ##########
-# Regression Adjustment & diff-in-diff analysis
-bound=quantile(Revenue,0.999)
+# Regression Adjustment
+bound=quantile(revenue_win,0.999)
 data_before$revenue_win = ifelse(data_before$revenue>bound, bound, data_before$revenue)
 data_start$revenue_win = ifelse(data_start$revenue>bound, bound, data_start$revenue)
 
-# regular t.test
-x1=data_start$revenue_win[data_start$groups=='treatment']
-x2=data_start$revenue_win[data_start$groups=='control']
-t.test(x = x1, y = x2,alternative = 'two.sided')
-
-# there might be bias prior to experiment start
-daily_rev_post = sqldf("select userid, country, device, groups, sum(revenue_win)/11 as rev_post 
-                       from data_start group by 1,2,3,4")
-daily_rev_pre = sqldf("select userid, country, device, groups, date, sum(revenue_win)/3 as rev_pre 
-                      from data_before group by 1,2,3,4")
-daily_rev = sqldf('select a.*, coalesce(rev_pre,0) as rev_pre from daily_rev_post a left outer join daily_rev_pre b on a.userid = b.userid')
-
-# diff in diff t test
-x1= with(daily_rev[daily_rev$groups=='treatment',], rev_post - rev_pre)
-x2= with(daily_rev[daily_rev$groups=='control',], rev_post - rev_pre)
-t.test(x = x1, y = x2,alternative = 'two.sided')
-
-# regression adjustment pre diff
-rev_mod = lm(rev_post ~ groups + country + device + rev_pre, data = daily_rev)
-summary(rev_mod)
-
-# cohort analysis, change, over time change, 14 dates, 4th day start, line chart with CI by date
-# look at users enrolled on day 4
-d4 = data_start[data_start$userid %in% data_start[data_start$date == "2017-05-11", 'userid'],]
-test_bydate = data.frame(matrix(nrow = 0, ncol = 6,
-                                  dimnames = list(NULL, 
-                                                  c('date','p.value','ctr_treatment',
-                                                    'ctr_control', 'ci.low','ci.high'))))
-
-for (i in 1:(length(unique(data$date))-3)){
-  date = as.character(sort(unique(data$date))[i+3])
-  test = ztest_by_subgroup(d4, 'date', date)
-  # you can check available statistics using names(test)
-  testresult = data.frame('date' = date, 
-                          'p.value' = test$p.value, 
-                          'ctr_treatment' = test$estimate[1], 
-                          'ctr_control' = test$estimate[2],
-                          'ci.low' = test$conf.int[1],
-                          'ci.high' = test$conf.int[2])
-  test_bydate = rbind(test_bydate,testresult)
-}
-
-par(mfrow = c(1,1))
-plot(ctr_treatment - ctr_control ~ date, data = test_bydate, ylim = c(-0.1, 0.1), ylab = 'P-t - P-c')
-plot(ci.low ~ date, data = test_bydate, lty = 4, col = 3, add = TRUE, ylab = '')
-plot(ci.high ~ date, data = test_bydate, lty = 4, col = 3, add = TRUE, ylab = '')
-abline(h = 0, lty = 2)
-
+## t test for revenue
+y1 = data_start$revenue_win[data_start$groups ==1]
+y2 = data_start$revenue_win[data_start$groups ==0]
+t.test(x=y1,y=y2,alternative = "two.sided")
+## 
+##  Welch Two Sample t-test
+## 
+## data:  y1 and y2
+## t = -1.7929, df = 17837, p-value = 0.07301
+## alternative hypothesis: true difference in means is not equal to 0
+## 95 percent confidence interval:
+##  -2.02020748  0.09000804
+## sample estimates:
+## mean of x mean of y 
+##  11.69437  12.65947
+# the difference between test/control group is not significant
